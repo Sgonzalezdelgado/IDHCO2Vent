@@ -1,0 +1,174 @@
+### Population diversity ###
+library("ape")
+library("pegas")
+library(readxl)
+library(dplyr)
+
+## Haplotype Diversity Calculation
+# Read the .arp file with haplotype frequencies by population
+haplo_frequencies <- read_excel("Haplo_AlixCOI.xlsx")
+
+# View the frequencies and haplotypes by population
+print(haplo_frequencies)
+
+# Create a list to store haplotype frequencies by population
+frequencies_by_population <- split(haplo_frequencies$Frequencies, haplo_frequencies$Population)
+
+# Function to calculate haplotype diversity
+haplotype_diversity <- function(frequencies) {
+  if (length(frequencies) == 0) return(NA)  # Handling populations without haplotypes
+  freq_values <- frequencies / sum(frequencies)  # Normalize frequencies
+  return(1 - sum(freq_values^2))  # Calculate diversity
+}
+
+# Calculate haplotype diversity for each population
+haplo_diversities <- sapply(frequencies_by_population, haplotype_diversity)
+
+# Print haplotype diversity results
+for (population in names(haplo_diversities)) {
+  cat("Haplotype Diversity Population", population, ":", haplo_diversities[[population]], "\n")
+}
+
+## Nucleotide Diversity Calculation from a Fasta file
+# Read the aligned sequence file in Fasta format
+alignment <- read.dna("ARBACIA_VENT_Nucleotide_alignment.fasta", format = "fasta")
+
+# Check the contents of the alignment
+print(alignment)
+
+# Extract sequences by population using acronyms
+population1 <- alignment[grep("^AB", rownames(alignment)), ]   # Control
+population2 <- alignment[grep("^AC", rownames(alignment)), ]   # Transition2
+population3 <- alignment[grep("^AT", rownames(alignment)), ]   # Transition1
+population4 <- alignment[grep("^AV", rownames(alignment)), ]   # Vent1
+population5 <- alignment[grep("^AP", rownames(alignment)), ]   # Vent2
+
+# Calculate nucleotide diversity for each population
+pi_population1 <- nuc.div(population1)
+pi_population2 <- nuc.div(population2)
+pi_population3 <- nuc.div(population3)
+pi_population4 <- nuc.div(population4)
+pi_population5 <- nuc.div(population5)
+
+# Print nucleotide diversity results
+cat("Nucleotide Diversity Population Control (AB):", pi_population1, "\n")
+cat("Nucleotide Diversity Population Transition2 (AC):", pi_population2, "\n")
+cat("Nucleotide Diversity Population Transition1 (AT):", pi_population3, "\n")
+cat("Nucleotide Diversity Population Vent1 (AV):", pi_population4, "\n")
+cat("Nucleotide Diversity Population Vent2 (AP):", pi_population5, "\n")
+
+## Permutation/Bootstrap Test for Both Diversities
+# Number of permutations
+n_permutations <- 10000
+
+# Function to perform permutation/Bootstrap test for haplotype diversity
+haplo_permutation_test <- function(frequencies1, frequencies2, n_permutations) {
+  combined_frequencies <- c(frequencies1, frequencies2)
+  n1 <- length(frequencies1)
+  n2 <- length(frequencies2)
+  
+  permuted_differences <- numeric(n_permutations)
+  
+  for (i in 1:n_permutations) {
+    permutation <- sample(combined_frequencies, length(combined_frequencies), replace = TRUE)
+    group1 <- permutation[1:n1]
+    group2 <- permutation[(n1 + 1):(n1 + n2)]
+    
+    H1 <- haplotype_diversity(group1)
+    H2 <- haplotype_diversity(group2)
+    
+    permuted_differences[i] <- abs(H1 - H2)
+  }
+  
+  return(permuted_differences)
+}
+
+## Function to perform Bootstrap test for nucleotide diversity 
+nucleotide_bootstrap_test <- function(population1, population2, n_permutations) {
+  # Combine the populations into a list
+  combined_sequences <- list(population1, population2)
+  n1 <- nrow(population1)  # Number of sequences in population 1
+  n2 <- nrow(population2)  # Number of sequences in population 2
+  
+  permuted_differences <- numeric(n_permutations)
+  
+  for (i in 1:n_permutations) {
+    # Resample with replacement for each population
+    boot_sample1 <- combined_sequences[[1]][sample(1:n1, n1, replace = TRUE), ]
+    boot_sample2 <- combined_sequences[[2]][sample(1:n2, n2, replace = TRUE), ]
+    
+    # Calculate nucleotide diversity for each bootstrap sample
+    pi1 <- nuc.div(boot_sample1)
+    pi2 <- nuc.div(boot_sample2)
+    
+    # Calculate the absolute difference
+    permuted_differences[i] <- abs(pi1 - pi2)
+  }
+  
+  return(permuted_differences)
+}
+
+# Function to calculate the p-value
+calculate_p_value <- function(permuted_differences, observed_difference) {
+  p_value <- mean(permuted_differences >= observed_difference)
+  return(p_value)
+}
+
+# Create dataframe to store the results
+results <- data.frame(
+  Population1 = character(),
+  Population2 = character(),
+  Haplo_Difference = numeric(),
+  Haplo_P_Value = numeric(),
+  Nucleotide_Difference = numeric(),
+  Nucleotide_P_Value = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Compare all populations for haplotype and nucleotide diversity
+haplo_frequencies <- list(frequencies_by_population$AB, frequencies_by_population$AC, 
+                          frequencies_by_population$AT, frequencies_by_population$AV, 
+                          frequencies_by_population$AP)
+n_populations <- length(haplo_frequencies)
+
+# Lists to store p-values
+haplo_p_values <- c()
+nucleotide_p_values <- c()
+
+for (i in 1:(n_populations - 1)) {
+  for (j in (i + 1):n_populations) {
+    # Haplotype comparison
+    observed_haplo_difference <- abs(haplotype_diversity(haplo_frequencies[[i]]) - haplotype_diversity(haplo_frequencies[[j]]))
+    permuted_haplo_differences <- haplo_permutation_test(haplo_frequencies[[i]], haplo_frequencies[[j]], n_permutations)
+    p_value_haplo <- calculate_p_value(permuted_haplo_differences, observed_haplo_difference)
+    
+    # Nucleotide comparison (with Bootstrap)
+    nucleotide_populations <- list(population1, population2, population3, population4, population5)
+    observed_nucleotide_difference <- abs(nuc.div(nucleotide_populations[[i]]) - nuc.div(nucleotide_populations[[j]]))
+    permuted_nucleotide_differences <- nucleotide_bootstrap_test(nucleotide_populations[[i]], nucleotide_populations[[j]], n_permutations)
+    p_value_nucleotide <- calculate_p_value(permuted_nucleotide_differences, observed_nucleotide_difference)
+    
+    # Add results to dataframe
+    results <- rbind(results, data.frame(
+      Population1 = paste("Population", i),
+      Population2 = paste("Population", j),
+      Haplo_Difference = observed_haplo_difference,
+      Haplo_P_Value = p_value_haplo,
+      Nucleotide_Difference = observed_nucleotide_difference,
+      Nucleotide_P_Value = p_value_nucleotide,
+      stringsAsFactors = FALSE
+    ))
+    
+    # Store p-values
+    haplo_p_values <- c(haplo_p_values, p_value_haplo)
+    nucleotide_p_values <- c(nucleotide_p_values, p_value_nucleotide)
+  }
+}
+
+# Print final results
+print(results)
+
+# Save results to a CSV file
+write.csv(results, "diversity_results.csv", row.names = FALSE)
+
+
